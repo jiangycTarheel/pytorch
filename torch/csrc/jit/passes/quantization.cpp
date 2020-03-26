@@ -247,6 +247,7 @@ bool nodeQuantizable(Node* n) {
       /* aten_funcs = */
       {
           "conv2d",
+          "conv3d",
           "linear",
           "addmm",
           "matmul",
@@ -1801,14 +1802,14 @@ graph(%a_dequant, %w_quant, %b):
   rewriter.runOnGraph(graph);
 }
 
-void insertPrepackUnpackForConv2d(std::shared_ptr<Graph>& graph) {
-  std::string conv_with_quant = R"(
+void insertPrepackUnpackForConv(std::shared_ptr<Graph>& graph) {
+  std::string conv2d_with_quant = R"(
 graph(%a_dequant, %w_quant, %b, %stride, %padding, %dilation, %groups):
         %w_dequant = aten::dequantize(%w_quant)
         %r = aten::conv2d(%a_dequant, %w_dequant, %b, %stride, %padding, %dilation, %groups)
         return (%r) )";
 
-  std::string conv_with_quant_prepack = R"(
+  std::string conv2d_with_quant_prepack = R"(
 graph(%a_dequant, %w_quant, %b, %stride, %padding, %dilation, %groups):
         %packed_params = quantized::conv2d_prepack(%w_quant, %b, %stride, %padding, %dilation, %groups)
         %w_quant_unpacked : Tensor, %b_unpacked : Tensor? = quantized::conv2d_unpack(%packed_params)
@@ -1816,9 +1817,31 @@ graph(%a_dequant, %w_quant, %b, %stride, %padding, %dilation, %groups):
         %r = aten::conv2d(%a_dequant, %w_dequant, %b_unpacked, %stride, %padding, %dilation, %groups)
         return (%r) )";
 
-  SubgraphRewriter rewriter;
-  rewriter.RegisterRewritePattern(conv_with_quant, conv_with_quant_prepack);
-  rewriter.runOnGraph(graph);
+  std::string conv3d_with_quant = R"(
+graph(%a_dequant, %w_quant, %b, %stride, %padding, %dilation, %groups):
+        %w_dequant = aten::dequantize(%w_quant)
+        %r = aten::conv3d(%a_dequant, %w_dequant, %b, %stride, %padding, %dilation, %groups)
+        return (%r) )";
+
+  std::string conv3d_with_quant_prepack = R"(
+graph(%a_dequant, %w_quant, %b, %stride, %padding, %dilation, %groups):
+        %packed_params = quantized::conv3d_prepack(%w_quant, %b, %stride, %padding, %dilation, %groups)
+        %w_quant_unpacked : Tensor, %b_unpacked : Tensor? = quantized::conv3d_unpack(%packed_params)
+        %w_dequant = aten::dequantize(%w_quant_unpacked)
+        %r = aten::conv3d(%a_dequant, %w_dequant, %b_unpacked, %stride, %padding, %dilation, %groups)
+        return (%r) )";
+
+  std::vector<std::vector<std::string>> patterns_and_replacements = {
+      {conv2d_with_quant, conv2d_with_quant_prepack},
+      {conv3d_with_quant, conv3d_with_quant_prepack}
+  };
+  for (const auto& item : patterns_and_replacements) {
+    SubgraphRewriter rewriter;
+    const auto& pattern = item[0];
+    const auto& replacement = item[1];
+    rewriter.RegisterRewritePattern(pattern, replacement);
+    rewriter.runOnGraph(graph);
+  }
 }
 
 c10::optional<IValue> toTwoElementIntList(Value* v) {
@@ -2582,7 +2605,7 @@ graph(%self, %scale, %zero_point, %dtype):
 
 void InsertPrepackUnpack(std::shared_ptr<Graph>& graph) {
   insertPrepackUnpackForLinear(graph);
-  insertPrepackUnpackForConv2d(graph);
+  insertPrepackUnpackForConv(graph);
 }
 
 void InsertPrepackUnpack(Module& module) {
